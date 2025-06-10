@@ -10,8 +10,9 @@ class FileServer:
         self.host = host
         self.port = port
         self.encryption = Encryption(key)
-        self.storage_dir = 'server_files'
-        os.makedirs(self.storage_dir, exist_ok=True)
+        # self.storage_dir is no longer used for restriction, but for consistency in internal paths
+        # For full system access, we won't restrict to a base directory for file operations.
+        # This will be adjusted in the command handlers.
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -72,47 +73,99 @@ class FileServer:
                     self.send_message(conn, {'status': 'error', 'message': 'No command specified'})
                     break
 
+                # The 'list' command will be changed to list a specified directory, or root
                 if command == 'list':
+                    # Allow client to specify a directory to list. Default to root if not provided.
+                    directory_to_list = data.get('path', '/') # Default to root directory
                     try:
-                        files = os.listdir(self.storage_dir)
-                        print(f"Listing files in {self.storage_dir}: {files}")  # Debug log
-                        response = {'files': files, 'status': 'success'}
+                        # Ensure the path is absolute and normalized
+                        abs_path = os.path.abspath(directory_to_list)
+                        files_and_dirs = os.listdir(abs_path)
+                        # Optionally, differentiate between files and directories
+                        files_list = []
+                        for item in files_and_dirs:
+                            full_item_path = os.path.join(abs_path, item)
+                            if os.path.isfile(full_item_path):
+                                files_list.append(item + " (FILE)")
+                            elif os.path.isdir(full_item_path):
+                                files_list.append(item + " (DIR)")
+
+                        print(f"Listing contents of {abs_path}: {files_list}")
+                        response = {'files': files_list, 'status': 'success'}
+                    except FileNotFoundError:
+                        response = {'status': 'error', 'message': 'Directory not found'}
+                    except PermissionError:
+                        response = {'status': 'error', 'message': 'Permission denied to list this directory'}
                     except Exception as e:
-                        print(f"Failed to list files: {e}")
-                        response = {'status': 'error', 'message': f'Failed to list files: {str(e)}'}
+                        print(f"Failed to list directory {directory_to_list}: {e}")
+                        response = {'status': 'error', 'message': f'Failed to list directory: {str(e)}'}
                     if not self.send_message(conn, response):
                         break
 
                 elif command == 'download':
-                    filename = data.get('filename')
-                    if not filename:
-                        response = {'status': 'error', 'message': 'No filename provided'}
+                    filepath = data.get('filepath') # Changed from 'filename' to 'filepath'
+                    if not filepath:
+                        response = {'status': 'error', 'message': 'No filepath provided'}
                     else:
                         try:
-                            with open(os.path.join(self.storage_dir, filename), 'rb') as f:
-                                file_data = f.read()
-                            response = {'data': file_data.hex(), 'status': 'success'}
-                        except FileNotFoundError:
-                            response = {'status': 'error', 'message': 'File not found'}
+                            # IMPORTANT: No path restriction here. Accesses provided filepath directly.
+                            abs_filepath = os.path.abspath(filepath)
+                            if not os.path.exists(abs_filepath):
+                                response = {'status': 'error', 'message': 'File not found'}
+                            elif not os.path.isfile(abs_filepath):
+                                response = {'status': 'error', 'message': 'Path is not a file'}
+                            else:
+                                with open(abs_filepath, 'rb') as f:
+                                    file_data = f.read()
+                                response = {'data': file_data.hex(), 'status': 'success'}
+                        except PermissionError:
+                            response = {'status': 'error', 'message': 'Permission denied to download this file'}
                         except Exception as e:
                             response = {'status': 'error', 'message': f'Download error: {str(e)}'}
                     if not self.send_message(conn, response):
                         break
 
                 elif command == 'delete':
-                    filename = data.get('filename')
-                    if not filename:
-                        response = {'status': 'error', 'message': 'No filename provided'}
+                    filepath = data.get('filepath') # Changed from 'filename' to 'filepath'
+                    if not filepath:
+                        response = {'status': 'error', 'message': 'No filepath provided'}
                     else:
                         try:
-                            os.remove(os.path.join(self.storage_dir, filename))
-                            response = {'status': 'success'}
-                        except FileNotFoundError:
-                            response = {'status': 'error', 'message': 'File not found'}
+                            # IMPORTANT: No path restriction here. Deletes provided filepath directly.
+                            abs_filepath = os.path.abspath(filepath)
+                            if not os.path.exists(abs_filepath):
+                                response = {'status': 'error', 'message': 'File not found'}
+                            elif not os.path.isfile(abs_filepath):
+                                response = {'status': 'error', 'message': 'Path is not a file'}
+                            else:
+                                os.remove(abs_filepath)
+                                response = {'status': 'success'}
+                        except PermissionError:
+                            response = {'status': 'error', 'message': 'Permission denied to delete this file'}
                         except Exception as e:
                             response = {'status': 'error', 'message': f'Delete error: {str(e)}'}
                     if not self.send_message(conn, response):
                         break
+
+                # You might want to add an 'upload' command here if needed for saving files
+                # For example:
+                # elif command == 'upload':
+                #     filepath = data.get('filepath')
+                #     file_data_hex = data.get('data')
+                #     if not filepath or not file_data_hex:
+                #         response = {'status': 'error', 'message': 'Missing filepath or data'}
+                #     else:
+                #         try:
+                #             abs_filepath = os.path.abspath(filepath)
+                #             with open(abs_filepath, 'wb') as f:
+                #                 f.write(bytes.fromhex(file_data_hex))
+                #             response = {'status': 'success', 'message': 'File uploaded successfully'}
+                #         except PermissionError:
+                #             response = {'status': 'error', 'message': 'Permission denied to upload to this location'}
+                #         except Exception as e:
+                #             response = {'status': 'error', 'message': f'Upload error: {str(e)}'}
+                #     if not self.send_message(conn, response):
+                #         break
 
                 else:
                     self.send_message(conn, {'status': 'error', 'message': 'Invalid command'})
