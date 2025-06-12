@@ -2,6 +2,7 @@ import socket
 import os
 import json
 import struct
+import threading
 from encryption import Encryption
 from config import HOST, PORT, ENCRYPTION_KEY
 
@@ -10,11 +11,10 @@ class FileServer:
         self.host = host
         self.port = port
         self.encryption = Encryption(key)
-        # self.storage_dir is no longer used for restriction, but for consistency in internal paths
-        # For full system access, we won't restrict to a base directory for file operations.
-        # This will be adjusted in the command handlers.
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Thread lock for synchronizing file system operations
+        self.file_lock = threading.Lock()
 
     def start(self):
         try:
@@ -23,7 +23,10 @@ class FileServer:
             print(f"Server listening on {self.host}:{self.port}")
             while True:
                 conn, addr = self.socket.accept()
-                self.handle_client(conn, addr)
+                # Create a new thread for each client
+                client_thread = threading.Thread(target=self.handle_client, args=(conn, addr))
+                client_thread.start()
+                print(f"Started thread {client_thread.name} for client {addr}")
         except Exception as e:
             print(f"Server error: {e}")
         finally:
@@ -55,7 +58,8 @@ class FileServer:
             return False
 
     def handle_client(self, conn, addr):
-        print(f"Connected to {addr}")
+        thread_name = threading.current_thread().name
+        print(f"[{thread_name}] Connected to {addr}")
         try:
             while True:
                 encrypted_data = self.receive_message(conn)
@@ -64,7 +68,7 @@ class FileServer:
                 try:
                     data = json.loads(self.encryption.decrypt(encrypted_data).decode())
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    print(f"Invalid data from {addr}: {e}")
+                    print(f"[{thread_name}] Invalid data from {addr}: {e}")
                     self.send_message(conn, {'status': 'error', 'message': f'Invalid data format: {e}'})
                     break
 
@@ -73,15 +77,12 @@ class FileServer:
                     self.send_message(conn, {'status': 'error', 'message': 'No command specified'})
                     break
 
-                # The 'list' command will be changed to list a specified directory, or root
                 if command == 'list':
-                    # Allow client to specify a directory to list. Default to root if not provided.
-                    directory_to_list = data.get('path', '/') # Default to root directory
+                    directory_to_list = data.get('path', '/')
                     try:
-                        # Ensure the path is absolute and normalized
                         abs_path = os.path.abspath(directory_to_list)
+                        # No lock needed for listing, as os.listdir is thread-safe
                         files_and_dirs = os.listdir(abs_path)
-                        # Optionally, differentiate between files and directories
                         files_list = []
                         for item in files_and_dirs:
                             full_item_path = os.path.join(abs_path, item)
@@ -89,35 +90,35 @@ class FileServer:
                                 files_list.append(item + " (FILE)")
                             elif os.path.isdir(full_item_path):
                                 files_list.append(item + " (DIR)")
-
-                        print(f"Listing contents of {abs_path}: {files_list}")
+                        print(f"[{thread_name}] Listing contents of {abs_path}: {files_list}")
                         response = {'files': files_list, 'status': 'success'}
                     except FileNotFoundError:
                         response = {'status': 'error', 'message': 'Directory not found'}
                     except PermissionError:
                         response = {'status': 'error', 'message': 'Permission denied to list this directory'}
                     except Exception as e:
-                        print(f"Failed to list directory {directory_to_list}: {e}")
+                        print(f"[{thread_name}] Failed to list directory {directory_to_list}: {e}")
                         response = {'status': 'error', 'message': f'Failed to list directory: {str(e)}'}
                     if not self.send_message(conn, response):
                         break
 
                 elif command == 'download':
-                    filepath = data.get('filepath') # Changed from 'filename' to 'filepath'
+                    filepath = data.get('filepath')
                     if not filepath:
                         response = {'status': 'error', 'message': 'No filepath provided'}
                     else:
                         try:
-                            # IMPORTANT: No path restriction here. Accesses provided filepath directly.
                             abs_filepath = os.path.abspath(filepath)
-                            if not os.path.exists(abs_filepath):
-                                response = {'status': 'error', 'message': 'File not found'}
-                            elif not os.path.isfile(abs_filepath):
-                                response = {'status': 'error', 'message': 'Path is not a file'}
-                            else:
-                                with open(abs_filepath, 'rb') as f:
-                                    file_data = f.read()
-                                response = {'data': file_data.hex(), 'status': 'success'}
+                            # Use lock to ensure thread-safe file reading
+                            with self.file_lock:
+                                if not os.path.exists(abs_filepath):
+                                    response = {'status': 'error', 'message': 'File not found'}
+                                elif not os.path.isfile(abs_filepath):
+                                    response = {'status': 'error', 'message': 'Path is not a file'}
+                                else:
+                                    with open(abs_filepath, 'rb') as f:
+                                        file_data = f.read()
+                                    response = {'data': file_data.hex(), 'status': 'success'}
                         except PermissionError:
                             response = {'status': 'error', 'message': 'Permission denied to download this file'}
                         except Exception as e:
@@ -126,20 +127,21 @@ class FileServer:
                         break
 
                 elif command == 'delete':
-                    filepath = data.get('filepath') # Changed from 'filename' to 'filepath'
+                    filepath = data.get('filepath')
                     if not filepath:
                         response = {'status': 'error', 'message': 'No filepath provided'}
                     else:
                         try:
-                            # IMPORTANT: No path restriction here. Deletes provided filepath directly.
                             abs_filepath = os.path.abspath(filepath)
-                            if not os.path.exists(abs_filepath):
-                                response = {'status': 'error', 'message': 'File not found'}
-                            elif not os.path.isfile(abs_filepath):
-                                response = {'status': 'error', 'message': 'Path is not a file'}
-                            else:
-                                os.remove(abs_filepath)
-                                response = {'status': 'success'}
+                            # Use lock to ensure thread-safe file deletion
+                            with self.file_lock:
+                                if not os.path.exists(abs_filepath):
+                                    response = {'status': 'error', 'message': 'File not found'}
+                                elif not os.path.isfile(abs_filepath):
+                                    response = {'status': 'error', 'message': 'Path is not a file'}
+                                else:
+                                    os.remove(abs_filepath)
+                                    response = {'status': 'success'}
                         except PermissionError:
                             response = {'status': 'error', 'message': 'Permission denied to delete this file'}
                         except Exception as e:
@@ -147,37 +149,17 @@ class FileServer:
                     if not self.send_message(conn, response):
                         break
 
-                # You might want to add an 'upload' command here if needed for saving files
-                # For example:
-                # elif command == 'upload':
-                #     filepath = data.get('filepath')
-                #     file_data_hex = data.get('data')
-                #     if not filepath or not file_data_hex:
-                #         response = {'status': 'error', 'message': 'Missing filepath or data'}
-                #     else:
-                #         try:
-                #             abs_filepath = os.path.abspath(filepath)
-                #             with open(abs_filepath, 'wb') as f:
-                #                 f.write(bytes.fromhex(file_data_hex))
-                #             response = {'status': 'success', 'message': 'File uploaded successfully'}
-                #         except PermissionError:
-                #             response = {'status': 'error', 'message': 'Permission denied to upload to this location'}
-                #         except Exception as e:
-                #             response = {'status': 'error', 'message': f'Upload error: {str(e)}'}
-                #     if not self.send_message(conn, response):
-                #         break
-
                 else:
                     self.send_message(conn, {'status': 'error', 'message': 'Invalid command'})
                     break
 
         except (ConnectionResetError, BrokenPipeError):
-            print(f"Client {addr} disconnected")
+            print(f"[{thread_name}] Client {addr} disconnected")
         except Exception as e:
-            print(f"Error handling client {addr}: {e}")
+            print(f"[{thread_name}] Error handling client {addr}: {e}")
         finally:
             conn.close()
-            print(f"Connection to {addr} closed")
+            print(f"[{thread_name}] Connection to {addr} closed")
 
 if __name__ == '__main__':
     server = FileServer()
