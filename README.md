@@ -1,6 +1,6 @@
 # TreeMoniter
 
-![TreeMoniter Logo](logo.png)
+![TreeMoniter Logo](utils/logo.png)
 
 ## Description
 
