@@ -31,7 +31,7 @@
 
 **Prerequisites**:
 - Python 3.x is required on both server and client machines.
-- All dependencies listed in `requirements.txt` (if available) should be installed.
+- All dependencies are basic python modules. No need for extra installations.
 
 ### 1. Setup
 
