@@ -1,10 +1,10 @@
 import socket
 import os
 import json
-import struct
 import threading
 from encryption import Encryption
 from config import HOST, PORT, ENCRYPTION_KEY
+from messaging import MessageHandler
 
 class FileServer:
     def __init__(self, host=HOST, port=PORT, key=ENCRYPTION_KEY):
@@ -13,6 +13,9 @@ class FileServer:
         self.encryption = Encryption(key)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.message_handler = MessageHandler(self.encryption)
+
+
         # Thread lock for synchronizing file system operations
         self.file_lock = threading.Lock()
 
@@ -32,56 +35,32 @@ class FileServer:
         finally:
             self.socket.close()
 
-    def receive_message(self, conn):
-        raw_msglen = self.recvall(conn, 4)
-        if not raw_msglen:
-            return None
-        msglen = struct.unpack('>I', raw_msglen)[0]
-        return self.recvall(conn, msglen)
-
-    def recvall(self, conn, n):
-        data = bytearray()
-        while len(data) < n:
-            packet = conn.recv(n - len(data))
-            if not packet:
-                return None
-            data.extend(packet)
-        return data
-
-    def send_message(self, conn, data):
-        data = self.encryption.encrypt(json.dumps(data))
-        length = struct.pack('>I', len(data))
-        try:
-            conn.sendall(length + data)
-            return True
-        except (BrokenPipeError, ConnectionResetError):
-            return False
 
     def handle_client(self, conn, addr):
         thread_name = threading.current_thread().name
         print(f"[{thread_name}] Connected to {addr}")
         try:
             while True:
-                encrypted_data = self.receive_message(conn)
+                encrypted_data = self.message_handler.receive_message(conn)
                 if not encrypted_data:
                     break
                 try:
                     data = json.loads(self.encryption.decrypt(encrypted_data).decode())
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
                     print(f"[{thread_name}] Invalid data from {addr}: {e}")
-                    self.send_message(conn, {'status': 'error', 'message': f'Invalid data format: {e}'})
+                    self.message_handler.send_message(conn, {'status': 'error', 'message': f'Invalid data format: {e}'})
                     break
 
                 command = data.get('command')
                 if not command:
-                    self.send_message(conn, {'status': 'error', 'message': 'No command specified'})
+                    self.message_handler.send_message(conn, {'status': 'error', 'message': 'No command specified'})
                     break
 
                 if command == 'list':
                     directory_to_list = data.get('path', '/')
                     try:
                         abs_path = os.path.abspath(directory_to_list)
-                        # No lock needed for listing, as os.listdir is thread-safe
+                        # No lock needed for listing, as os.listdir is thread-safe (reading operation is safe)
                         files_and_dirs = os.listdir(abs_path)
                         files_list = []
                         for item in files_and_dirs:
@@ -99,7 +78,7 @@ class FileServer:
                     except Exception as e:
                         print(f"[{thread_name}] Failed to list directory {directory_to_list}: {e}")
                         response = {'status': 'error', 'message': f'Failed to list directory: {str(e)}'}
-                    if not self.send_message(conn, response):
+                    if not self.message_handler.send_message(conn, response):
                         break
 
                 elif command == 'download':
@@ -109,6 +88,7 @@ class FileServer:
                     else:
                         try:
                             abs_filepath = os.path.abspath(filepath)
+                            
                             # Use lock to ensure thread-safe file reading
                             with self.file_lock:
                                 if not os.path.exists(abs_filepath):
@@ -123,7 +103,7 @@ class FileServer:
                             response = {'status': 'error', 'message': 'Permission denied to download this file'}
                         except Exception as e:
                             response = {'status': 'error', 'message': f'Download error: {str(e)}'}
-                    if not self.send_message(conn, response):
+                    if not self.message_handler.send_message(conn, response):
                         break
 
                 elif command == 'delete':
@@ -146,11 +126,11 @@ class FileServer:
                             response = {'status': 'error', 'message': 'Permission denied to delete this file'}
                         except Exception as e:
                             response = {'status': 'error', 'message': f'Delete error: {str(e)}'}
-                    if not self.send_message(conn, response):
+                    if not self.message_handler.send_message(conn, response):
                         break
 
                 else:
-                    self.send_message(conn, {'status': 'error', 'message': 'Invalid command'})
+                    self.message_handler.send_message(conn, {'status': 'error', 'message': 'Invalid command'})
                     break
 
         except (ConnectionResetError, BrokenPipeError):
