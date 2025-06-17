@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 import os
 
+from cross_platform import get_root
+
 class FileClientGUI:
     def __init__(self, client):
         self.client = client
@@ -10,10 +12,7 @@ class FileClientGUI:
         self.root.title("File Client")
 
         self.connection_status = tk.StringVar(value="Disconnected")
-        self.current_path = tk.StringVar(value="/")
-
-        self.client.connection_status = self.connection_status
-        self.client.current_path = self.current_path
+        self.current_path = tk.StringVar(value=get_root())
 
         self.setup_gui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -53,7 +52,7 @@ class FileClientGUI:
         return simpledialog.askstring("Change Directory", "Enter directory path:", initialvalue=self.current_path.get())
     
     def save_file_dialog(self, file_path):
-        return filedialog.asksaveasfilename(defaultextension=".*", initialfile=os.path.basename(os.path.join(file_path)))
+        return filedialog.asksaveasfilename(defaultextension=".*", initialfile=os.path.basename(file_path))
 
     def on_closing(self):
         if self.client.socket:

@@ -10,6 +10,8 @@ from config import HOST, PORT, ENCRYPTION_KEY
 
 import os
 
+from cross_platform import to_network_path, safe_path_join
+
 class FileClient:
     def __init__(self, host=HOST, port=PORT, key=ENCRYPTION_KEY):
         self.host = host #ip of server
@@ -21,7 +23,6 @@ class FileClient:
         self.socket = None
         self.root = self.file_client_gui.root  # Access the root window from the GUI class
 
-        self.root.title("File Client")
         self.connection_status = self.file_client_gui.connection_status  # Access the connection status from the GUI class
         self.current_path = self.file_client_gui.current_path # To keep track of the current directory
 
@@ -84,7 +85,7 @@ class FileClient:
             print(f"Error receiving message: {e}")
             return None
 
-    def recvall(self, n):
+    def recvall(self, n): #recv all bytes in once packet
         data = bytearray()
         while len(data) < n:
             packet = self.socket.recv(n - len(data))
@@ -94,7 +95,7 @@ class FileClient:
             data.extend(packet)
         return data
 
-    def list_files(self, path_to_list=None): # Added path_to_list parameter
+    def list_files(self, path_to_list=None): 
         if not self.socket:
             self.file_client_gui.error_message("Error", "Not connected to server")
             print("Error: List files attempted without connection")
@@ -105,10 +106,11 @@ class FileClient:
             if not path_to_list:
                 return
 
+        network_path = to_network_path(path_to_list)
         self.current_path.set(path_to_list)
         self.path_label.config(text=f"Current Directory: {self.current_path.get()}")
 
-        if not self.send_message({'command': 'list', 'path': path_to_list}): # Send the path
+        if not self.send_message({'command': 'list', 'path': network_path}): # Send the path
             return
         response = self.receive_message()
         if response:
@@ -147,7 +149,7 @@ class FileClient:
         elif selected_item.endswith(" (DIR)"):
             self.file_client_gui.error_message("Error", "Cannot download a directory. Please select a file.")
             return
-        else: # Fallback for items without specific tags (e.g., initial list)
+        else: # Fallback for items without specific tags 
             item_name = selected_item
 
         if item_name == "(No files or directories available in this path)":
@@ -156,13 +158,14 @@ class FileClient:
             return
 
         # Construct the full path on the server
-        server_filepath = os.path.join(self.current_path.get(), item_name)
+        local_full_path = safe_path_join(self.current_path.get(), item_name)
+        server_filepath = to_network_path(local_full_path)
 
         if self.send_message({'command': 'download', 'filepath': server_filepath}): # Send the full path
             response = self.receive_message()
             if response and response.get('status') == 'success':
                 # Suggest the original filename for saving
-                save_path = self.file_client_gui.save_file_dialog(server_filepath)
+                save_path = self.file_client_gui.save_file_dialog(server_filepath) #changes to base name in the module
                 if save_path:
                     try:
                         with open(save_path, 'wb') as f:
@@ -206,7 +209,8 @@ class FileClient:
             return
 
         # Construct the full path on the server
-        server_filepath = os.path.join(self.current_path.get(), item_name)
+        local_full_path = safe_path_join(self.current_path.get(), item_name)
+        server_filepath = to_network_path(local_full_path)
 
         if self.file_client_gui.yes_no_message("Confirm Delete", f"Are you sure you want to delete '{item_name}'? This action cannot be undone."):
             if self.send_message({'command': 'delete', 'filepath': server_filepath}): # Send the full path

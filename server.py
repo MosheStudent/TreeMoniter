@@ -6,6 +6,7 @@ from encryption import Encryption
 from config import HOST, PORT, ENCRYPTION_KEY
 from messaging import MessageHandler
 
+from cross_platform import get_root, from_network_path, to_network_path
 class FileServer:
     def __init__(self, host=HOST, port=PORT, key=ENCRYPTION_KEY):
         self.host = host
@@ -18,6 +19,9 @@ class FileServer:
 
         # Thread lock for synchronizing file system operations
         self.file_lock = threading.Lock()
+
+        self.pathSlash = get_root()
+
 
     def start(self):
         try:
@@ -57,9 +61,10 @@ class FileServer:
                     break
 
                 if command == 'list':
-                    directory_to_list = data.get('path', '/')
+                    directory_to_list = data.get('path', to_network_path(self.pathSlash))
                     try:
-                        abs_path = os.path.abspath(directory_to_list)
+                        local_path = from_network_path(directory_to_list)
+                        abs_path = os.path.abspath(local_path)
                         # No lock needed for listing, as os.listdir is thread-safe (reading operation is safe)
                         files_and_dirs = os.listdir(abs_path)
                         files_list = []
@@ -87,7 +92,8 @@ class FileServer:
                         response = {'status': 'error', 'message': 'No filepath provided'}
                     else:
                         try:
-                            abs_filepath = os.path.abspath(filepath)
+                            local_path = from_network_path(filepath)
+                            abs_filepath = os.path.abspath(local_path)
                             
                             # Use lock to ensure thread-safe file reading
                             with self.file_lock:
@@ -112,7 +118,8 @@ class FileServer:
                         response = {'status': 'error', 'message': 'No filepath provided'}
                     else:
                         try:
-                            abs_filepath = os.path.abspath(filepath)
+                            local_path = from_network_path(filepath)
+                            abs_filepath = os.path.abspath(local_path)
                             # Use lock to ensure thread-safe file deletion
                             with self.file_lock:
                                 if not os.path.exists(abs_filepath):
